@@ -1,53 +1,92 @@
-# This is a basic workflow to help you get started with Actions
+# Replace your existing workflow with this file.
+# Set matrix.godot to the exact version shown in Help > About Godot.
+# Commit a Web preset named "Web" in export_presets.cfg beside project.godot.
+# Set repository Settings > Pages > Source to "GitHub Actions".
+name: Godot Web CI
 
-name: CI
-
-env:
-  GODOT_VERSION: 3.3.3
-  
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the main branch
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
-
-  # Allows you to run this workflow manually from the Actions tab
+    branches: [main]
   workflow_dispatch:
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+permissions:
+  contents: read
+
+env:
+  PROJECT_PATH: "." # Folder containing project.godot; change if it is in a subfolder.
+
 jobs:
   export-web:
     name: Web Export
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        godot: ["4.5.1"] # EXAMPLE: replace with your exact Godot 4 version.
     container:
-      image: barichello/godot-ci:3.3.3
+      image: barichello/godot-ci:${{ matrix.godot }}
+    env:
+      GODOT_VERSION: ${{ matrix.godot }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v7
         with:
           lfs: true
-      - name: Setup
+          persist-credentials: false
+
+      - name: Set up export templates
         run: |
-          mkdir -v -p ~/.local/share/godot/templates
-          mv /root/.local/share/godot/templates/${GODOT_VERSION}.stable ~/.local/share/godot/templates/${GODOT_VERSION}.stable
+          godot --version
+          if [ "$HOME" != "/root" ]; then
+            mkdir -p "$HOME/.local/share/godot/export_templates"
+            cp -a "/root/.local/share/godot/export_templates/${GODOT_VERSION}.stable" \
+              "$HOME/.local/share/godot/export_templates/"
+          fi
+
       - name: Web Build
         run: |
-          mkdir -v -p build/web
-          godot -v --export "HTML5" ./build/web/index.html
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v1
+          if [ ! -f "$PROJECT_PATH/project.godot" ]; then
+            echo "::error::project.godot is missing. Commit your Godot source project and set PROJECT_PATH to its folder."
+            exit 1
+          fi
+          if [ ! -f "$PROJECT_PATH/export_presets.cfg" ]; then
+            echo "::error::export_presets.cfg is missing. Create a Web preset named Web in Godot and commit the file beside project.godot."
+            exit 1
+          fi
+          mkdir -p "$GITHUB_WORKSPACE/build/web"
+          godot --headless --path "$PROJECT_PATH" --import
+          godot --headless --path "$PROJECT_PATH" --export-release "Web" \
+            "$GITHUB_WORKSPACE/build/web/index.html"
+          test -s "$GITHUB_WORKSPACE/build/web/index.html"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
         with:
-          name: web
           path: build/web
-      # Installing rsync is needed in order to deploy to GitHub Pages. Without it, the build will fail.
-      - name: Install rsync 📚
-        run: |
-          apt-get update && apt-get install -y rsync
-      - name: Deploy to GitHub Pages 🚀
-        uses: JamesIves/github-pages-deploy-action@releases/v3
-        with:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BRANCH: main # The branch the action should deploy to.
-          FOLDER: build/web # The folder the action should deploy.
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: export-web
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@v6
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v5
